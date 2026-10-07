@@ -1,0 +1,63 @@
+# Publish listings.json, the list jawb.app shows, on GitHub Pages:
+# https://4hum-ai.github.io/jawb-hub/listings.json
+#
+# On every push to main, and daily: each listing is fetched and checked
+# again, so a listing whose source disappeared or changed drops out (with a
+# warning) instead of showing stale data. This file is for display only. It
+# is not the signed index jawbd trusts, which comes with the index key
+# (4hum-ai/jawb#139).
+name: Publish listings
+
+on:
+  push:
+    branches: [main]
+    paths: ['listings/**', 'tools/**']
+  schedule:
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build listings.json
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Check every listing and write listings.json
+        run: |
+          node tools/hub.mjs index --out site/listings.json
+          cp site/listings.json site/index.json
+          jq '{generated_at, listings: (.listings | length)}' site/listings.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

@@ -1,0 +1,29 @@
+name: Report an extension
+description: Something wrong with a listed extension (not a vulnerability: use a private report for those)
+labels: [report]
+body:
+  - type: input
+    id: extension
+    attributes:
+      label: Extension id and version
+      placeholder: com.example.hello 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What is wrong
+      options:
+        - The source is gone or changed
+        - It does something its manifest or README does not say
+        - It is on the never-list
+        - Name or ownership dispute
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What you saw
+    validations:
+      required: true

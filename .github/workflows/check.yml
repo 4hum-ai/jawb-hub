@@ -1,0 +1,89 @@
+# Check a listing pull request (ADR 0022 in 4hum-ai/jawb; #165).
+#
+# The checker always runs from main: this job checks out the base branch and
+# brings in only the PR's listings/ files as data. A PR cannot change the
+# checks that judge it. `pull_request` from a fork gets a read-only token and
+# no secrets.
+#
+# A listing PR changes only listings/<id>.toml. Changes to tools/ or
+# .github/ are maintainer PRs (CODEOWNERS) and run ci.yml.
+name: Check listings
+
+on:
+  pull_request:
+    paths: ['listings/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Listing checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+
+      - name: Bring in the PR's listings only
+        env:
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --no-tags origin "pull/$PR/head"
+          changed="$(git diff --name-only "$BASE" "$HEAD")"
+          other="$(grep -v '^listings/[^/]*\.toml$' <<< "$changed" || true)"
+          if [ -n "$other" ]; then
+            echo "::error::a listing pull request changes only listings/<id>.toml; this one also changes:"
+            echo "$other"
+            exit 1
+          fi
+          mkdir -p base
+          git archive "$BASE" listings | tar -x -C base
+          files=()
+          while read -r f; do
+            [ -n "$f" ] || continue
+            if git cat-file -e "$HEAD:$f" 2>/dev/null; then
+              git show "$HEAD:$f" > "$f"
+            else
+              rm -f "$f"
+            fi
+            files+=("$f")
+          done <<< "$changed"
+          printf '%s\n' "${files[@]}" > changed.txt
+          echo "changed listings:"; cat changed.txt
+
+      - name: Install the checker's one dependency
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Check
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          mapfile -t files < changed.txt
+          set +e
+          node tools/hub.mjs check --author "$AUTHOR" --base base/listings "${files[@]}" | tee result.txt
+          code=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "## jawb Hub checks"
+            echo
+            echo "Listed means these exact bytes passed these automated checks. It is not a review, a signature or a warranty (TERMS.md)."
+            echo
+            echo '```'
+            cat result.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"

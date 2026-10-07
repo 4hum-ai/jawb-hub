@@ -1,0 +1,17 @@
+#!/bin/sh
+# Every commit traces to tracked work. The tracker lives in the mega-repo,
+# so a commit in THIS repo still references it.
+#
+# Rare, deliberate exception:  HARNESS_SKIP_COMMIT_MSG=1 git commit ...
+# (same name as the mega-repo root hook, so one bypass is one bypass everywhere)
+[ "${HARNESS_SKIP_COMMIT_MSG:-}" = "1" ] && exit 0
+BODY=$(grep -v "^#" "$1")
+if ! printf "%s\n" "$BODY" | grep -Eq "^[[:space:]]*Refs[[:space:]]+4hum-ai/jawb#[0-9]+"; then
+  echo "commit-msg: missing 'Refs <owner>/<repo>#N' — every commit must link to its issue." >&2
+  exit 1
+fi
+if printf "%s\n" "$BODY" | grep -Eiq "(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]+([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)?#[0-9]+"; then
+  echo "commit-msg: a commit must not auto-close an issue — use 'Refs <owner>/<repo>#N'." >&2
+  exit 1
+fi
+exit 0

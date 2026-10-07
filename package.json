@@ -1,0 +1,14 @@
+{
+  "name": "jawb-hub",
+  "private": true,
+  "type": "module",
+  "description": "Community extension listings for jawb, with automated checks",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test tools/*.test.mjs",
+    "check": "node tools/hub.mjs check"
+  },
+  "dependencies": {
+    "smol-toml": "1.9.0"
+  }
+}

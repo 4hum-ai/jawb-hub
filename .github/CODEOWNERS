@@ -1,0 +1,7 @@
+# Changes to the checks and workflows are maintainer changes.
+/tools/ @tewnut
+/.github/ @tewnut
+/TERMS.md @tewnut
+/SECURITY.md @tewnut
+/package.json @tewnut
+/package-lock.json @tewnut

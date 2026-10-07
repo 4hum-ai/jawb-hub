@@ -5,6 +5,11 @@ agents. Publishers list their extensions here by pull request, automated
 checks run on every listing, and [jawb.app/extensions](https://jawb.app/extensions)
 shows what passed.
 
+**Building one?** Start with the tutorial,
+[Build and list your first extension](docs/tutorial.md), and the
+[manifest reference](docs/manifest.md). [`examples/site-screens/`](examples/site-screens)
+is a template to copy.
+
 > **What "listed" means.** These exact bytes passed jawb Hub's automated
 > checks. It is not a review, a signature or a warranty: jawb does not vouch
 > for the code. You decide whether to install an extension, and jawb asks
@@ -35,7 +40,7 @@ downloading and unpacking it, then running
 
 ## The listing file
 
-`listings/com.example.hello.toml`:
+`listings/com.example.hello.toml` (also in [`examples/listing.example.toml`](examples/listing.example.toml)):
 
 ```toml
 [listing]

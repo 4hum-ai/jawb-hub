@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "description": "capture input: the runner screens.capture, pinned to one site",
+  "properties": {
+    "base_url": {
+      "type": "string",
+      "enum": ["https://example.com"],
+      "description": "The site: only this one"
+    },
+    "pages": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 200 },
+      "description": "Paths to capture, such as / or /pricing (1 to 20; default [\"/\"])"
+    },
+    "viewports": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["mobile", "desktop"] },
+      "description": "mobile and/or desktop (default both)"
+    },
+    "schemes": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["light", "dark"] },
+      "description": "light and/or dark (default both)"
+    }
+  },
+  "required": ["base_url"],
+  "additionalProperties": false
+}

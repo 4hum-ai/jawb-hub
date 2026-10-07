@@ -1,0 +1,34 @@
+# A workflow extension that screenshots your own site's pages at phone and
+# desktop sizes, in light and dark. Copy this directory, then change the id,
+# publisher, origin and base_url (see README.md).
+[extension]
+id = "io.github.your-login.site-screens"
+version = "0.1.0"
+shape = "workflow"
+purpose = "Screenshot the pages of example.com at phone and desktop sizes, in light and dark"
+publisher = "Your name"
+min_api_level = 21
+
+[matches]
+origins = ["https://example.com"]
+
+[capabilities]
+browser_sessions = ["incognito"]
+filesystem = "write:site-screens"
+
+[capabilities.why]
+browser_sessions = "Each page opens in a fresh incognito tab, with no sign-ins"
+filesystem = "Screenshots and the report go under ./site-screens"
+
+[limits]
+max_steps_per_run = 300
+max_run_seconds = 600
+
+[[tools]]
+name = "capture"
+description = "Screenshot pages of example.com (paths such as / or /pricing) at mobile and desktop sizes, in light and dark. Writes one PNG per page, size and scheme, plus report.md and report.json, under ./site-screens. A page is PASS when all its screenshots were written."
+effect = "act"
+max_effect = "act"
+runner = "screens.capture"
+input_schema = "schemas/capture.input.json"
+output_schema = "schemas/capture.output.json"

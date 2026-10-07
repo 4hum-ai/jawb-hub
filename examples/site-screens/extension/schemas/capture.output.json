@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "description": "capture output",
+  "properties": {
+    "run": { "type": "string", "enum": ["completed", "config_error", "harness_drift"] },
+    "exit_code": { "type": "integer", "enum": [0, 2, 3] },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "page": { "type": "string" },
+          "id": { "type": "string" },
+          "verdict": { "type": "string", "enum": ["PASS", "FAIL", "UNCERTAIN", "BLOCKED"] },
+          "reason": { "type": "string" },
+          "files": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["page", "id", "verdict", "files"]
+      }
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "PASS": { "type": "integer", "minimum": 0 },
+        "FAIL": { "type": "integer", "minimum": 0 },
+        "UNCERTAIN": { "type": "integer", "minimum": 0 },
+        "BLOCKED": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "report_md": { "type": "string" },
+    "report_json": { "type": "string" }
+  },
+  "required": ["run", "exit_code"]
+}

@@ -1,0 +1,9 @@
+[listing]
+id = "io.github.tewnut.hello"
+owners = ["github:tewnut"]
+homepage = "https://github.com/4hum-ai/jawb-hub"
+
+[[versions]]
+version = "0.1.0"
+artifact_sha256 = "bcb3637fb6c60b33371bbfa0f91d8a907cd19031b1f8e7b280b8bc3e001ca410"
+source = { kind = "url", url = "https://github.com/4hum-ai/jawb-hub/releases/download/hub-ci-fixture-0.1.0/io.github.tewnut.hello-0.1.0.tar.gz" }

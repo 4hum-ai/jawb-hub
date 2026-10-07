@@ -1,0 +1,49 @@
+# Copy to .github/workflows/release.yml in your extension's repository.
+# On a tag v<version>: pack extension/ (the package: extension.toml,
+# schemas/, README.md, LICENSE) into a .tar.gz, attach it to the GitHub
+# release, and print its sha256 and the jawb Hub listing entry to paste into
+# listings/<id>.toml.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pack, release, print the listing entry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        working-directory: extension
+        run: |
+          id="$(sed -n 's/^id = "\(.*\)"/\1/p' extension.toml | head -1)"
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' extension.toml | head -1)"
+          [ "v$version" = "$TAG" ] || { echo "::error::extension.toml says $version but the tag is $TAG"; exit 1; }
+          files=(extension.toml README.md schemas)
+          [ -f LICENSE ] && files+=(LICENSE)
+          asset="$id-$version.tar.gz"
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 -cf - "${files[@]}" | gzip -n -9 > "$asset"
+          sha="$(sha256sum "$asset" | cut -d' ' -f1)"
+          gh release create "$TAG" "$asset" --title "$id $version" --notes "sha256 $sha"
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$asset"
+          {
+            echo "## jawb Hub listing entry for $id $version"
+            echo
+            echo 'Add this to `listings/'"$id"'.toml` in https://github.com/4hum-ai/jawb-hub and open a pull request:'
+            echo
+            echo '```toml'
+            echo '[[versions]]'
+            echo "version = \"$version\""
+            echo "artifact_sha256 = \"$sha\""
+            echo "source = { kind = \"url\", url = \"$url\" }"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

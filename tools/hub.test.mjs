@@ -254,3 +254,26 @@ test("a listing is checked end to end from a URL and from npm, and published ver
   ]));
   assert.match((await checkListing(npmOnly, { env: env() })).problems.join(), /postinstall/);
 });
+
+test("every example package passes the listing checks, and the example listing parses", () => {
+  const ex = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..", "examples");
+  const read = (dir, rel = "") => {
+    const out = new Map();
+    for (const e of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) for (const [k, v] of read(dir, r)) out.set(k, v);
+      else out.set(r, fs.readFileSync(path.join(dir, r)));
+    }
+    return out;
+  };
+  const dirs = fs.readdirSync(ex, { withFileTypes: true }).filter((e) => e.isDirectory());
+  assert.ok(dirs.length >= 1);
+  for (const d of dirs) {
+    // A template repository keeps its package in extension/.
+    const files = read(path.join(ex, d.name, "extension"));
+    const id = files.get("extension.toml").toString().match(/^id = "(.*)"/m)[1];
+    const version = files.get("extension.toml").toString().match(/^version = "(.*)"/m)[1];
+    assert.deepEqual(checkPackage(files, { id }, version).problems, [], d.name);
+  }
+  assert.equal(parseListing(fs.readFileSync(path.join(ex, "listing.example.toml"), "utf8")).id, "com.example.hello");
+});

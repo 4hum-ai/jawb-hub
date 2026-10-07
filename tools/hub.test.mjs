@@ -176,7 +176,7 @@ test("the package checks name what is wrong", () => {
     [MANIFEST().replace('runner = "scenario.run"', 'runner = "shell"'), /not one jawb ships/],
     [MANIFEST().replace("min_api_level = 21", "min_api_level = 18").replace('runner = "scenario.run"', 'runner = "screens.capture"'), /needs min_api_level 19/],
     [MANIFEST().replace('filesystem = "The report goes under ./hello"\n', ""), /reason for `filesystem`/],
-    [MANIFEST().replace("Say hello", "Say​ hello"), /invisible or bidi/],
+    [MANIFEST().replace("Say hello", "Say\u200b hello"), /invisible or bidi/],
     [MANIFEST().replace("Say hello to a local site", "Find LinkedIn profiles"), /never-list/],
     [MANIFEST().replace('shape = "workflow"', 'shape = "site-tools"'), /installs workflow/],
     [MANIFEST("com.example.other"), /not the listing's/],

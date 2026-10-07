@@ -39,7 +39,7 @@ const EFFECTS = ["none", "act", "submit", "download", "upload", "credential"];
 const CAPABILITIES = ["network_domains", "secrets", "browser_sessions", "filesystem", "user_identity"];
 const MAX_BYTES = 5 * 1024 * 1024;
 const MAX_ENTRIES = 200;
-const HIDDEN = /[­​-‏‪-‮⁠-⁤⁦-⁩﻿]/;
+const HIDDEN = /[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
 // The never-list (CONTRIBUTING.md): words that send a listing to a human.
 const NEVER = /\blinkedin\b|\bcoupons?\b|\bcaptcha\b|bot[- ]defen[cs]e|second[- ]factor|\btotp\b|one[- ]time (pass)?code|rate[- ]limit (bypass|evasion)/i;
 

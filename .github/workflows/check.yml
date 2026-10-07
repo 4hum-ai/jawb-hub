@@ -6,12 +6,12 @@
 # no secrets.
 #
 # A listing PR changes only listings/<id>.toml. Changes to tools/ or
-# .github/ are maintainer PRs (CODEOWNERS) and run ci.yml.
+# .github/ are maintainer PRs (CODEOWNERS) and run ci.yml; for a PR that
+# changes no listing this required check passes at once.
 name: Check listings
 
 on:
   pull_request:
-    paths: ['listings/**']
 
 permissions:
   contents: read
@@ -37,14 +37,22 @@ jobs:
           fetch-depth: 0
 
       - name: Bring in the PR's listings only
+        id: listings
         env:
           HEAD: ${{ github.event.pull_request.head.sha }}
           BASE: ${{ github.event.pull_request.base.sha }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           git fetch --no-tags origin "pull/$PR/head"
-          changed="$(git diff --name-only "$BASE" "$HEAD")"
-          other="$(grep -v '^listings/[^/]*\.toml$' <<< "$changed" || true)"
+          all="$(git diff --name-only "$BASE" "$HEAD")"
+          changed="$(grep '^listings/[^/]*\.toml$' <<< "$all" || true)"
+          if [ -z "$changed" ]; then
+            echo "no listing changed: nothing to check here (ci.yml covers tools/)"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          other="$(grep -v '^listings/[^/]*\.toml$' <<< "$all" || true)"
           if [ -n "$other" ]; then
             echo "::error::a listing pull request changes only listings/<id>.toml; this one also changes:"
             echo "$other"
@@ -66,9 +74,11 @@ jobs:
           echo "changed listings:"; cat changed.txt
 
       - name: Install the checker's one dependency
+        if: steps.listings.outputs.run == 'true'
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Check
+        if: steps.listings.outputs.run == 'true'
         env:
           AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |

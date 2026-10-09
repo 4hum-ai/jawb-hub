@@ -356,9 +356,14 @@ export async function checkListing(file, { author, baseDir, env, deps } = {}) {
         problems.push(`${v.version}: the source's sha256 is ${got}, the listing says ${v.artifact_sha256}`);
         continue;
       }
-      const r = checkPackage(untar(bytes), listing, v.version);
+      const files = untar(bytes);
+      const r = checkPackage(files, listing, v.version);
       problems.push(...r.problems.map((m) => `${v.version}: ${m}`));
-      if (!r.problems.length) versions.push({ ...v, manifest: r.manifest });
+      // The signed index (tools/signed-index.mjs) needs the two digests
+      // jawbd compares, and the bytes it mirrors.
+      if (!r.problems.length) {
+        versions.push({ ...v, manifest: r.manifest, manifest_sha256: sha(files.get("extension.toml")), size: bytes.length, bytes });
+      }
     } catch (e) {
       if (!(e instanceof HubError) && !(e instanceof TypeError)) throw e;
       problems.push(`${v.version}: ${e.message}`);
@@ -368,7 +373,7 @@ export async function checkListing(file, { author, baseDir, env, deps } = {}) {
 }
 
 // ---- listings.json for jawb.app ----------------------------------------------------
-const cmpVersion = (a, b) => {
+export const cmpVersion = (a, b) => {
   const pa = a.split(/[.-]/).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
   const pb = b.split(/[.-]/).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {

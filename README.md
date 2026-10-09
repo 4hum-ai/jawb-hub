@@ -31,12 +31,28 @@ is a template to copy.
    The listing then appears on jawb.app. The listing data is published at
    `https://4hum-ai.github.io/jawb-hub/listings.json` and refreshed daily: a
    listing whose source disappears or changes drops out.
+5. **jawb's signed index lists it.** The Index workflow re-checks every
+   listing, signs `https://get.jawb.app/extensions/index.json` with jawb's
+   index key and keeps a copy of each listed package next to it. jawbd uses
+   the index to label an install *listed* (these exact bytes passed the
+   checks) or *unlisted*, and to learn revocations. The signature says the
+   bytes passed the checks; it is not a review.
 
-**Preview.** jawb installs only its own built-in extensions today. Until
-jawb can install listed extensions (4hum-ai/jawb#163), try one by
-downloading and unpacking it, then running
-`jawb extension load --dev <directory>`. The developer docs are at
+**Installing.** `jawb extension install <id>` installs a listed extension
+from the index; `jawb extension install --file <package>` or
+`install https://...#sha256=<digest>` installs any package, which jawb
+labels *unlisted* unless the index lists those exact bytes (jawbd API level
+28, 4hum-ai/jawb#163). The developer docs are at
 [jawb.app/docs/extensions](https://jawb.app/docs/extensions).
+
+## Revocations
+
+`revocations.json` holds what the index revokes: by id and versions
+(`revoked`) or by the package's sha256 (`revoked_sha256`), each with a
+`kind` (`security` disables the package in jawbd; `licence` is recorded),
+a `reason` and the time `at`. A revocation is never removed: the Index
+workflow refuses to publish an index that drops or weakens one. Only
+maintainers change this file (CODEOWNERS).
 
 ## The listing file
 

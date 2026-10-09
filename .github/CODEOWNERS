@@ -5,3 +5,5 @@
 /SECURITY.md @tewnut
 /package.json @tewnut
 /package-lock.json @tewnut
+/revocations.json @tewnut
+/keys/ @tewnut

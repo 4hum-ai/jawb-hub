@@ -1,0 +1,180 @@
+# Sign and publish the extensions index jawbd trusts (4hum-ai/jawb ADR 0022,
+# #139): https://get.jawb.app/extensions/index.json and its .minisig, plus a
+# copy of each listed package at extensions/<id>/<version>/<id>-<version>.tgz
+# (where `jawb extension install <id>` fetches it).
+#
+# Daily (the index is valid for 7 days, and jawbd refuses more than 8), on a
+# change to listings, revocations, keys or tools on main, and by hand.
+#
+# The live index, verified against keys/index*.pub, gives the previous
+# serial, the first publish dates and the revocations: the new serial is
+# higher (jawbd refuses a rollback forever), and no revocation may
+# disappear. tools/signed-index.mjs builds the document; it never sees the
+# key. The minisign CLI signs it, prehashed, with the trusted comment
+# `extensions-index <serial> <expires_at>`; both minisign and the node
+# checker (the rules jawbd applies) verify it before and after upload.
+#
+# Secrets (environment `index`, main only, no reviewer because it runs on a
+# schedule): INDEX_MINISIGN_SECRET_KEY, INDEX_MINISIGN_PASSWORD,
+# R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY. A stolen index key
+# can list, freeze or revoke, never bring in code: a listed package still
+# has to match the digests in the index, and jawbd shows its source.
+name: Index
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['listings/**', 'revocations.json', 'keys/**', 'tools/**', '.github/workflows/index.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extensions-index
+  cancel-in-progress: false
+
+env:
+  PUBLIC_BASE_URL: https://get.jawb.app
+  BUCKET: jawb-releases
+  # minisign 0.12 for Linux: its sha256, and its author's key (verified
+  # against the published .minisig when this was pinned).
+  MINISIGN_URL: https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-linux.tar.gz
+  MINISIGN_SHA256: 9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73
+  MINISIGN_AUTHOR_KEY: RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  index:
+    name: Build, sign and upload the index
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: index
+    env:
+      AWS_DEFAULT_REGION: auto
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+      AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Secrets and keys must be set
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          SK: ${{ secrets.INDEX_MINISIGN_SECRET_KEY }}
+          PW: ${{ secrets.INDEX_MINISIGN_PASSWORD }}
+        run: |
+          missing=
+          [ -n "$R2_ACCOUNT_ID" ] || missing="$missing R2_ACCOUNT_ID"
+          [ -n "$AWS_ACCESS_KEY_ID" ] || missing="$missing R2_ACCESS_KEY_ID"
+          [ -n "$AWS_SECRET_ACCESS_KEY" ] || missing="$missing R2_SECRET_ACCESS_KEY"
+          [ -n "$SK" ] || missing="$missing INDEX_MINISIGN_SECRET_KEY"
+          [ -n "$PW" ] || missing="$missing INDEX_MINISIGN_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::the index environment is missing:$missing. No index was published (4hum-ai/jawb#139)."
+            exit 1
+          fi
+          if grep -q PLACEHOLDER keys/index.pub; then echo "::error::keys/index.pub is a placeholder"; exit 1; fi
+          echo "R2_ENDPOINT=https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" >> "$GITHUB_ENV"
+
+      - name: Install minisign (pinned sha256 and its author's signature)
+        run: |
+          d="$RUNNER_TEMP/minisign"; mkdir -p "$d"
+          curl -fsSL -o "$d/m.tar.gz" "$MINISIGN_URL"
+          curl -fsSL -o "$d/m.tar.gz.minisig" "$MINISIGN_URL.minisig"
+          echo "$MINISIGN_SHA256  $d/m.tar.gz" | sha256sum -c -
+          printf 'untrusted comment: minisign author key\n%s\n' "$MINISIGN_AUTHOR_KEY" > "$d/author.pub"
+          node tools/signed-index.mjs verify-file --file "$d/m.tar.gz" --pub "$d/author.pub"
+          tar -xzf "$d/m.tar.gz" -C "$d" minisign-linux/x86_64/minisign
+          echo "$d/minisign-linux/x86_64" >> "$GITHUB_PATH"
+
+      - name: The live index (previous serial, dates and revocations)
+        run: |
+          minisign -v
+          mkdir -p live/extensions
+          code="$(curl -sS -o live/extensions/index.json -w '%{http_code}' "$PUBLIC_BASE_URL/extensions/index.json?run=$GITHUB_RUN_ID")"
+          case "$code" in
+            200)
+              curl -fsS -o live/extensions/index.json.minisig "$PUBLIC_BASE_URL/extensions/index.json.minisig?run=$GITHUB_RUN_ID"
+              node tools/signed-index.mjs verify --dir live --pub keys/index.pub --pub keys/index-next.pub \
+                || { echo "::error::the live index does not verify against keys/index*.pub; refusing to build on it"; exit 1; }
+              echo "PREVIOUS=--previous live/extensions/index.json" >> "$GITHUB_ENV" ;;
+            404) echo "no live index yet" ;;
+            *) echo "::error::$PUBLIC_BASE_URL/extensions/index.json answered HTTP $code"; exit 1 ;;
+          esac
+
+      - name: Build
+        run: node tools/signed-index.mjs build --out stage --revocations revocations.json $PREVIOUS
+
+      - name: Sign and verify
+        env:
+          SK: ${{ secrets.INDEX_MINISIGN_SECRET_KEY }}
+          PW: ${{ secrets.INDEX_MINISIGN_PASSWORD }}
+        run: |
+          tc="$(jq -r .trusted_comment stage/plan.json)"
+          key="$RUNNER_TEMP/index.key"
+          umask 077
+          printf '%s\n' "$SK" | tr -d '\r' > "$key"
+          trap 'rm -f "$key"' EXIT
+          # -H: prehashed, the only kind jawbd accepts. The password reaches
+          # minisign on stdin, never on a command line.
+          printf '%s\n' "$PW" | minisign -S -H -s "$key" -m stage/extensions/index.json -t "$tc" > /dev/null
+          rm -f "$key"
+          minisign -V -p keys/index.pub -m stage/extensions/index.json | grep -qxF "Trusted comment: $tc"
+          node tools/signed-index.mjs verify --dir stage --pub keys/index.pub
+
+      # Packages first: the index never names one that is not there yet.
+      # Then the signature and the index, back to back. A client reading
+      # between those two puts (or while the edge holds one old copy, up to
+      # max-age) gets a pair that does not verify; it fails closed, jawbd
+      # keeps the index it holds, and a retry a minute later succeeds.
+      - name: Upload
+        run: |
+          put() {
+            aws s3api put-object --endpoint-url "$R2_ENDPOINT" --bucket "$BUCKET" --key "$1" --body "stage/$1" \
+              --content-type "$2" --cache-control "$3" > /dev/null
+            echo "uploaded $1"
+          }
+          for k in $(jq -r '.packages[]' stage/plan.json); do
+            put "$k" application/gzip 'public, max-age=86400'
+          done
+          put extensions/index.json.minisig 'text/plain; charset=utf-8' 'public, max-age=60'
+          put extensions/index.json application/json 'public, max-age=60'
+
+      - name: Check what is served
+        run: |
+          serial="$(jq .serial stage/plan.json)"
+          mkdir -p served/extensions
+          for i in 1 2 3 4 5 6; do
+            curl -fsS -o served/extensions/index.json "$PUBLIC_BASE_URL/extensions/index.json?check=$GITHUB_RUN_ID-$i"
+            curl -fsS -o served/extensions/index.json.minisig "$PUBLIC_BASE_URL/extensions/index.json.minisig?check=$GITHUB_RUN_ID-$i"
+            [ "$(jq .serial served/extensions/index.json)" = "$serial" ] && break
+            sleep 10
+          done
+          node tools/signed-index.mjs verify --dir served --pub keys/index.pub
+          minisign -V -p keys/index.pub -m served/extensions/index.json
+          {
+            echo "index serial $serial, expires $(jq -r .expires_at stage/plan.json)"
+            echo "listed $(jq .listed stage/plan.json), revoked $(jq .revoked stage/plan.json), revoked by sha256 $(jq .revoked_sha256 stage/plan.json)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The index is overwritten in place: keep each signed copy.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: extensions-index-${{ github.run_id }}
+          path: |
+            stage/extensions/index.json
+            stage/extensions/index.json.minisig
+            stage/plan.json
+          retention-days: 90

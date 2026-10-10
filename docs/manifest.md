@@ -127,4 +127,3 @@ At most 5 MB and 200 files, regular files only, LF line endings.
   This is under design: ADR 0023 in
   [4hum-ai/jawb](https://github.com/4hum-ai/jawb), issue #166. It is not
   available yet, and this page will describe it once it ships.
-- **Installing listed extensions** with `jawb extension install <id>` (#163).

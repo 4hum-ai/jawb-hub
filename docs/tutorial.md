@@ -4,7 +4,7 @@ In about fifteen minutes you build a jawb extension that screenshots your
 own site's pages at phone and desktop sizes, in light and dark. Then you
 try it locally, release it, and list it on jawb Hub. You need:
 
-- `jawb` and `jawbd` at API level 21 or later (`jawb --json status` shows
+- `jawb` and `jawbd` at API level 28 or later (`jawb --json status` shows
   `api_level`), with Chrome or Chromium installed;
 - a GitHub account, and a repository for your extension.
 
@@ -149,6 +149,14 @@ Releasing 0.2.0 later is one more `[[versions]]` entry in the same file.
 - **At install:** where it comes from, and what it may do with your reasons.
   jawb asks again whenever an update wants more.
 
-jawb installs only its built-in extensions today. Until it can install
-listed ones (#163 in 4hum-ai/jawb), people try yours with
-`jawb extension load --dev` after downloading and unpacking the release.
+## How people install it
+
+- **Once your listing is merged:** `jawb extension install <your id>`. jawb
+  takes the package from your source, checks it against its signed index,
+  and labels it *listed*.
+- **Before that, or for a version you have not listed:**
+  `jawb extension install https://…/<id>-<version>.tar.gz#sha256=<sha256>`.
+  It installs the same bytes, labelled *unlisted*.
+
+Either way, people approve what it may do first, and approve again whenever
+an update wants more.

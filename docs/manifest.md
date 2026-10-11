@@ -6,10 +6,10 @@ one is refused with a named error, and nothing is installed. A newer field
 never gets silently ignored by an older jawb. Instead, `min_api_level` makes
 the older jawb refuse the package up front.
 
-This page describes what jawb accepts today: **workflow** extensions, which
-run one of jawb's runners with your grants and your input schema. Code
-extensions, with activation rules and hooks, are being designed (see
-"What is coming" at the end).
+This page describes what the Hub lists today: **workflow** extensions, which
+run one of jawb's runners with your grants and your input schema. jawb
+itself also runs **code extensions** from API level 35, but the Hub does not
+list them yet (see "What is coming" at the end).
 
 ## `[extension]`
 
@@ -122,8 +122,17 @@ At most 5 MB and 200 files, regular files only, LF line endings.
 
 ## What is coming
 
-- **Code extensions.** Your own code, run by jawb, with activation rules
-  (for example "on these URLs"), hook registration and one supported stack.
-  This is under design: ADR 0023 in
-  [4hum-ai/jawb](https://github.com/4hum-ai/jawb), issue #166. It is not
-  available yet, and this page will describe it once it ships.
+- **Code extensions on the Hub.** jawb runs code extensions from API level
+  35 (built, not in a release yet; issue #166 in
+  [4hum-ai/jawb](https://github.com/4hum-ai/jawb)): a tool with
+  `runner = "exec"`, a `[runtime]` section (`node = ">=22"`,
+  `entry = "dist/extension.mjs"`), a `dist/` bundle and an inert
+  `package.json`. The code runs on Node.js with the user's full access, so
+  jawb installs it only on an approval the operating system verifies.
+  [Code extensions](https://jawb.app/docs/extensions#code-extensions) on
+  jawb.app describes them. The Hub's checks refuse the `exec` runner until
+  they are extended to check code packages; this page will describe them
+  then.
+- **Hooks.** Code extensions reacting to what happens in jawb (activation
+  rules such as "on these URLs", and events), from ADR 0023 phase 3,
+  issue #198.

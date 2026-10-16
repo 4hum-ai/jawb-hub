@@ -7,15 +7,18 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
+import { parse as parseToml } from "smol-toml";
 import {
   checkListing,
   checkOwnership,
   checkPackage,
+  expandHookEvent,
   idDomain,
   listingsJson,
   parseListing,
   sha,
   untar,
+  validDistPath,
   validId,
 } from "./hub.mjs";
 
@@ -78,9 +81,12 @@ function tgz(files, { top = "", paxGlobal = false } = {}) {
     const rec = Buffer.from("52 comment=0123456789abcdef0123456789abcdef01234567\n");
     blocks.push(header("pax_global_header", rec.length, "g"), rec, pad(rec.length));
   }
-  for (const [name, text] of Object.entries(files)) {
-    const data = Buffer.from(text);
-    blocks.push(header(top + name, data.length), data, pad(data.length));
+  for (const [name, v] of Object.entries(files)) {
+    // A string or Buffer is a regular file; { type } is any other entry
+    // (5 directory, 2 symlink, 1 hard link).
+    const type = typeof v === "object" && !Buffer.isBuffer(v) ? v.type : "0";
+    const data = type === "0" ? Buffer.from(v) : Buffer.alloc(0);
+    blocks.push(header(top + name, data.length, type), data, pad(data.length));
   }
   blocks.push(Buffer.alloc(1024));
   return zlib.gzipSync(Buffer.concat(blocks));
@@ -276,4 +282,233 @@ test("every example package passes the listing checks, and the example listing p
     assert.deepEqual(checkPackage(files, { id }, version).problems, [], d.name);
   }
   assert.equal(parseListing(fs.readFileSync(path.join(ex, "listing.example.toml"), "utf8")).id, "com.example.hello");
+});
+
+// ---- code packages (ADR 0023 phase 1c, 4hum-ai/jawb#195) ---------------------
+// The manifest is core's own fixture for an exec extension
+// (crates/extensions/src/manifest.rs `tests::CODE`). No fixture files are
+// shared between jawbd and the Hub yet, so the Hub keeps a copy, and the
+// cases below mirror core's `exec_tools_need_runtime_level_35_and_node_22`,
+// `dist_paths`, `exec_bundles_unpack_and_load_from_a_directory` and
+// `code_packages_check_their_bundle_and_package_json`.
+const CODE = (extra = "") => `
+[extension]
+id = "com.example.code"
+version = "0.1.0"
+shape = "workflow"
+purpose = "Summarise a page with the extension's own code"
+publisher = "Example"
+min_api_level = 35
+
+[matches]
+origins = ["http://localhost:*"]
+
+[capabilities]
+browser_sessions = ["incognito"]
+
+[capabilities.why]
+browser_sessions = "A fresh incognito tab per call"
+
+[limits]
+max_steps_per_run = 20
+max_run_seconds = 30
+
+[runtime]
+node = ">=22"
+entry = "dist/extension.mjs"
+
+[[tools]]
+name = "summarise"
+description = "Summarise a page"
+effect = "act"
+max_effect = "act"
+runner = "exec"
+input_schema = "schemas/in.json"
+output_schema = "schemas/out.json"
+${extra}`;
+const CODE_FILES = (manifest = CODE(), extra = {}) => ({
+  "extension.toml": manifest,
+  "README.md": "# Code\n",
+  "schemas/in.json": SCHEMA,
+  "schemas/out.json": SCHEMA,
+  "dist/extension.mjs": "export function activate() {}\n",
+  ...extra,
+});
+const codeListing = { id: "com.example.code" };
+const asMap = (o) => new Map(Object.entries(o).map(([k, v]) => [k, Buffer.from(v)]));
+const codeProblems = (manifest, extra = {}, drop = []) => {
+  const files = asMap(CODE_FILES(manifest, extra));
+  for (const d of drop) files.delete(d);
+  return checkPackage(files, codeListing, "0.1.0").problems.join("\n");
+};
+const ELF = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0]);
+
+test("dist paths follow jawbd's valid_dist_path", () => {
+  for (const ok of ["dist/extension.mjs", "dist/a/b/c.js", "dist/data.json", "dist/m.wasm"]) assert.ok(validDistPath(ok), ok);
+  for (const bad of ["dist/", "dist/x.node", "dist/node_modules/x.js", "dist/.hidden.js", "dist/x.exe", "dist/x.sh", "src/x.mjs", "dist/a b.js", "dist/a/b/c/d/e/f/g/h/i.js"]) {
+    assert.ok(!validDistPath(bad), bad);
+  }
+});
+
+test("a code package with a dist/ bundle and an inert package.json passes", () => {
+  const extra = {
+    "dist/lib/util.js": "export const x = 1;\n",
+    "dist/m.wasm": "\0asm\x01\0\0\0",
+    "dist/data.json": "{}",
+    "package.json": '{"name":"x","type":"module","scripts":{"build":"esbuild src/extension.ts"}}',
+    LICENSE: "MIT\n",
+  };
+  assert.deepEqual(checkPackage(asMap(CODE_FILES(CODE(), extra)), codeListing, "0.1.0").problems, []);
+  // Through the unpacker, with directory entries and npm's wrapper.
+  const files = untar(
+    tgz({ "": { type: "5" }, "dist/": { type: "5" }, "dist/lib/": { type: "5" }, "schemas/": { type: "5" }, ...CODE_FILES(CODE(), extra) }, { top: "package/" }),
+  );
+  assert.ok(files.has("dist/lib/util.js") && files.has("dist/m.wasm"));
+  assert.deepEqual(checkPackage(files, codeListing, "0.1.0").problems, []);
+});
+
+test("a code package is refused for what jawbd refuses, and named", () => {
+  const cases = [
+    // The bundle.
+    [CODE(), { "dist/node_modules/left-pad/index.js": "//" }, [], /node_modules is refused/],
+    [CODE(), { "node_modules/left-pad/index.js": "//" }, [], /node_modules is refused/],
+    [CODE(), { "dist/addon.node": "x" }, [], /native addons \(\.node\) are refused/],
+    [CODE(), { "addon.node": "x" }, [], /native addons/],
+    [CODE(), { "dist/run.sh": "#!/bin/sh" }, [], /may not be in dist\//],
+    [CODE(), { "dist/.hidden.js": "//" }, [], /may not be in dist\//],
+    [CODE(), { "src/extension.ts": "//" }, [], /may not be in a package/],
+    [CODE(), { "bin/tool": "x" }, [], /may not be in a package/],
+    [CODE(), { "dist/tool.js": ELF }, [], /native executable/],
+    [CODE(), { "dist/tool.wasm": Buffer.from([0x4d, 0x5a, 0x90, 0]) }, [], /native executable/],
+    // package.json is inert data.
+    [CODE(), { "package.json": '{"scripts":{"postinstall":"node x"}}' }, [], /`postinstall` script/],
+    [CODE(), { "package.json": '{"scripts":{"prepare":"tsc"}}' }, [], /`prepare` script/],
+    [CODE(), { "package.json": "{not json" }, [], /package.json is not JSON/],
+    // [runtime].
+    [CODE(), {}, ["dist/extension.mjs"], /entry `dist\/extension.mjs` is not in the package/],
+    [CODE().replace('entry = "dist/extension.mjs"', 'entry = "extension.mjs"'), { "extension.mjs": "x" }, [], /not a bundle under dist\//],
+    [CODE().replace('entry = "dist/extension.mjs"', 'entry = "dist/x.json"'), { "dist/x.json": "{}" }, [], /not a bundle under dist\//],
+    [CODE().replace('entry = "dist/extension.mjs"', 'entry = "dist/../x.mjs"'), {}, [], /not a bundle under dist\//],
+    [CODE().replace('node = ">=22"', 'node = ">=20"'), {}, [], /Node 20; it must be >=22/],
+    [CODE().replace('node = ">=22"', 'node = "^22"'), {}, [], /not a Node range/],
+    [CODE().replace('node = ">=22"', 'node = ">=22.1.2.3"'), {}, [], /not a Node range/],
+    [CODE().replace('[runtime]\nnode = ">=22"\nentry = "dist/extension.mjs"\n', ""), {}, [], /needs \[runtime\]/],
+    [CODE().replace('runner = "exec"', 'runner = "scenario.run"'), {}, [], /\[runtime\] is only for extensions with an exec tool/],
+    [CODE().replace("[runtime]\n", "[runtime]\nextra = 1\n"), {}, [], /unknown key\(s\) in \[runtime\]: extra/],
+    [CODE().replace("min_api_level = 35", "min_api_level = 34"), {}, [], /runner `exec` needs min_api_level 35/],
+    // Sections jawbd refuses.
+    [CODE("\n[foo]\nx = 1\n"), {}, [], /unknown section \[foo\]/],
+    [CODE('\n[[triggers]]\non = "x"\n'), {}, [], /\[triggers\] is reserved/],
+  ];
+  for (const [m, extra, drop, want] of cases) {
+    assert.match(codeProblems(m, extra, drop), want, want.source);
+  }
+  // `>= 24.1.0` is a range jawb understands.
+  assert.equal(codeProblems(CODE().replace('node = ">=22"', 'node = ">= 24.1.0"')), "");
+  // A workflow with no exec tool may not carry a bundle.
+  const wf = asMap({ ...FILES(), "dist/x.mjs": "" });
+  assert.match(checkPackage(wf, { id: "com.example.hello" }, "1.0.0").problems.join(), /no exec tool/);
+});
+
+test("the unpacker refuses symlinks, links, stray directories and odd paths", () => {
+  const files = CODE_FILES();
+  for (const [extra, want] of [
+    [{ "dist/link.js": { type: "2" } }, /not a regular file.*symlinks/],
+    [{ "dist/hard.js": { type: "1" } }, /not a regular file/],
+    [{ "node_modules/": { type: "5" } }, /unexpected directory `node_modules\/`/],
+    [{ "dist/node_modules/": { type: "5" } }, /unexpected directory/],
+    [{ "other/": { type: "5" } }, /unexpected directory/],
+    [{ "dist\\x.js": "x" }, /not a plain relative path/],
+    [{ "dist//x.js": "x" }, /not a plain relative path/],
+    [{ "dist/./x.js": "x" }, /not a plain relative path/],
+  ]) {
+    assert.throws(() => untar(tgz({ ...files, ...extra })), want, Object.keys(extra)[0]);
+  }
+  // The same inside npm's wrapper.
+  assert.throws(() => untar(tgz({ ...files, "dist/link.js": { type: "2" } }, { top: "package/" })), /symlinks/);
+  assert.throws(() => untar(tgz({ ...files, "node_modules/": { type: "5" } }, { top: "package/" })), /unexpected directory/);
+});
+
+// ---- activation and hooks (ADR 0023 sections 5 and 6) ---------------------
+const HOOKS = `
+[activation]
+urls = ["http://localhost:*/pull/*", "http://localhost:*/**"]
+sessions = ["incognito"]
+
+[[hooks]]
+on = "nav.open.after"
+where = { ok = true }
+input = ["tab", "url", "status"]
+
+[[hooks]]
+on = "act.*.after"
+input = ["tab", "verb"]
+`;
+const ACTIVATION = '[activation]\nurls = ["http://localhost:*/pull/*", "http://localhost:*/**"]\nsessions = ["incognito"]\n';
+
+test("hook events expand in the verb position only", () => {
+  assert.deepEqual(expandHookEvent("nav.open.after"), ["nav.open.after"]);
+  assert.equal(expandHookEvent("act.*.after").length, 11);
+  assert.ok(expandHookEvent("act.*.after").includes("act.dialog-accept.after"));
+  assert.deepEqual(expandHookEvent("nav.*.after"), ["nav.open.after", "nav.navigate.after", "nav.history.after", "nav.reload.after"]);
+  for (const bad of ["*", "*.open.after", "act.click.*", "act.*.before", "tab.*.after"]) assert.equal(expandHookEvent(bad), null, bad);
+});
+
+test("[activation] and [[hooks]] are checked, and refused until jawbd installs them (#198)", () => {
+  // A well-formed declaration is refused for one reason only: no jawbd yet.
+  assert.equal(
+    codeProblems(CODE(HOOKS)),
+    "[activation] and [[hooks]] are ADR 0023 phase 3 (4hum-ai/jawb#198): no released jawbd installs them yet, so the Hub cannot list them",
+  );
+  for (const [extra, want] of [
+    [HOOKS.replace('on = "nav.open.after"', 'on = "nav.open.before"'), /\.before gate point is for \[\[rules\]\] only/],
+    [HOOKS.replace('on = "nav.open.after"', 'on = "daemon.started"'), /daemon\.\* events are never given/],
+    [HOOKS.replace('on = "nav.open.after"', 'on = "*.open.after"'), /names a catalogue event|wildcard may stand only for the verb/],
+    [HOOKS.replace('on = "nav.open.after"', 'on = "act.click.after"'), /act.click.after has another hook/],
+    [HOOKS.replace('on = "act.*.after"', 'on = "nav.*.after"'), /nav.open.after has another hook/],
+    [HOOKS.replace('"http://localhost:*/pull/*"', '"https://github.com/*/*/pull/*"'), /outside \[matches\] origins/],
+    [HOOKS.replace('"http://localhost:*/pull/*"', '"localhost/pull"'), /not an origin pattern/],
+    [HOOKS.replace('sessions = ["incognito"]', 'sessions = ["profile:work"]'), /`profile:work` is not granted/],
+    [HOOKS.replace("where = { ok = true }", "where = { ok = { gt = 1 } }"), /equality or membership/],
+    [HOOKS.replace(ACTIVATION, ""), /\[\[hooks\]\] needs \[activation\]/],
+  ]) {
+    assert.match(codeProblems(CODE(extra)), want, want.source);
+  }
+  // Hooks are for code.
+  const wf = asMap(FILES(MANIFEST("com.example.hello", "1.0.0", HOOKS)));
+  assert.match(checkPackage(wf, { id: "com.example.hello" }, "1.0.0").problems.join(), /for extensions with an exec tool/);
+});
+
+test("listings.json shows code, its runtime, and hooks expanded for jawb.app", async () => {
+  // End to end: a code package from a release URL passes and is listed.
+  const pkg = tgz(CODE_FILES(CODE(), { "package.json": '{"name":"code","private":true}' }), { top: "code-0.1.0/" });
+  routes.set("/code-0.1.0.tgz", pkg);
+  const f = listingFile(
+    tmp("code"),
+    "com.example.code",
+    LISTING("com.example.code", [{ version: "0.1.0", sha: sha(pkg), source: `{ kind = "url", url = "${base}/code-0.1.0.tgz" }` }]),
+  );
+  const r = await checkListing(f, { env: env() });
+  assert.deepEqual(r.problems, []);
+  const l = listingsJson([r]).listings[0];
+  assert.equal(l.code, true);
+  assert.deepEqual(l.runtime, { node: ">=22", entry: "dist/extension.mjs" });
+  assert.equal(l.tools[0].runner, "exec");
+  assert.equal(l.activation, null);
+  assert.deepEqual(l.hooks, []);
+
+  // A version with hooks (once jawbd installs them) shows each one expanded.
+  const manifest = parseToml(CODE(HOOKS));
+  const h = listingsJson([{ ...r, versions: [{ ...r.versions[0], manifest }] }]).listings[0];
+  assert.deepEqual(h.activation, { urls: ["http://localhost:*/pull/*", "http://localhost:*/**"], sessions: ["incognito"] });
+  assert.equal(h.hooks.length, 2);
+  assert.deepEqual(h.hooks[0], { on: "nav.open.after", events: ["nav.open.after"], where: { ok: true }, input: ["tab", "url", "status"] });
+  assert.equal(h.hooks[1].on, "act.*.after");
+  assert.deepEqual(h.hooks[1].events, expandHookEvent("act.*.after"));
+  assert.ok(h.hooks[1].events.includes("act.click.after"));
+
+  // A workflow listing says it is not code.
+  const plain = listingsJson([{ ...r, versions: [{ ...r.versions[0], manifest: parseToml(MANIFEST()) }] }]).listings[0];
+  assert.equal(plain.code, false);
+  assert.equal(plain.runtime, null);
 });

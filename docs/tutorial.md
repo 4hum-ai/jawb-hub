@@ -8,10 +8,11 @@ try it locally, release it, and list it on jawb Hub. You need:
   `api_level`), with Chrome or Chromium installed;
 - a GitHub account, and a repository for your extension.
 
-A jawb extension today is a **workflow**: a manifest that runs one of jawb's
+This tutorial builds a **workflow**: a manifest that runs one of jawb's
 runners with grants you declare and an input schema you write. It contains
 no code, and every step it takes is an ordinary jawb command under jawb's
-checks. Code extensions are coming (see the [manifest reference](manifest.md)).
+checks. A code extension runs your own bundle instead; the
+[manifest reference](manifest.md#code-extensions) has its rules.
 
 ## 1. Start from the template
 

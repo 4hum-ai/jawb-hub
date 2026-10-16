@@ -6,10 +6,10 @@ one is refused with a named error, and nothing is installed. A newer field
 never gets silently ignored by an older jawb. Instead, `min_api_level` makes
 the older jawb refuse the package up front.
 
-This page describes what the Hub lists today: **workflow** extensions, which
-run one of jawb's runners with your grants and your input schema. jawb
-itself also runs **code extensions** from API level 35, but the Hub does not
-list them yet (see "What is coming" at the end).
+This page describes what the Hub lists: **workflow** extensions, which run
+one of jawb's runners with your grants and your input schema, and **code
+extensions** (API level 35), whose tool runs your own JavaScript bundle on
+Node.js (see "Code extensions" below).
 
 ## `[extension]`
 
@@ -82,6 +82,7 @@ shorter ending that is unique on their machine (`site-check.capture`).
 | `scenario.validate` | 18 | Checks a scenario and opens no page. | `scenario` |
 | `scenario.run` | 18 | Runs a scenario's criteria and writes `report.md` and `report.json` with a verdict per criterion. | `scenario`, `profile`, `incognito`, `out_dir`, `stop_on_first_fail`, `step_timeout_ms` |
 | `screens.capture` | 19 | Screenshots pages at each viewport and colour scheme. | `base_url`, `pages`, `viewports`, `schemes`, `name`, `out_dir`, `step_timeout_ms` |
+| `exec` | 35 | Runs your own bundle (see "Code extensions"). | What your `input_schema` allows |
 
 The runner reads those input fields. Your `input_schema` decides which of
 them a caller may send, and with what values. **Narrowing the schema is how
@@ -114,25 +115,56 @@ extension.toml
 schemas/*.json
 README.md
 LICENSE          optional
-package.json     npm packages only; jawb ignores it
+package.json     optional; inert data, jawb never runs its scripts
+dist/**          code extensions only: *.mjs, *.js, *.json, *.wasm
 ```
 
 The files may sit in one top-level directory (npm's `package/` does this).
-At most 5 MB and 200 files, regular files only, LF line endings.
+At most 5 MB and 200 entries, regular files only, LF line endings. The only
+directories are `schemas/` and `dist/` (with subdirectories in `dist/`).
+
+## Code extensions
+
+A code extension has a tool with `runner = "exec"` (API level 35, so
+`min_api_level = 35` or higher) and a `[runtime]` section:
+
+```toml
+[runtime]
+node = ">=22"                  # >=MAJOR[.MINOR[.PATCH]], 22 or higher
+entry = "dist/extension.mjs"   # a .mjs or .js file under dist/, in the package
+
+[[tools]]
+name = "summarise"
+runner = "exec"
+# description, effect, max_effect, input_schema, output_schema as above
+```
+
+The code runs on Node.js with the user's full access, so jawb installs it
+only on an approval the operating system verifies, and jawb.app marks it.
+[Code extensions](https://jawb.app/docs/extensions#code-extensions) on
+jawb.app describes the API. jawb never runs `npm install`, so build one
+bundle that carries its own dependencies (esbuild, Rollup or tsup). The Hub
+refuses a package, as jawb does, that:
+
+- holds `node_modules`, a `.node` addon, or any other executable (a file
+  that is a native program is refused whatever its name);
+- holds a symlink, a hard link or a device;
+- holds anything outside the layout above, such as `src/` or a `.sh` file,
+  or a `dist/` path that is hidden or more than 8 levels deep;
+- declares an npm lifecycle script in `package.json` (`preinstall`,
+  `install`, `postinstall`, `prepare`, `prepublish`, `preprepare`,
+  `postprepare`); a `build` script is fine;
+- has no `[runtime]`, a `node` range that allows Node 20 or lower, or an
+  `entry` that is missing or outside `dist/`;
+- has `dist/` or `[runtime]` but no `exec` tool.
+
+`listings.json` marks a code extension with `code: true` and its `runtime`.
 
 ## What is coming
 
-- **Code extensions on the Hub.** jawb runs code extensions from API level
-  35 (built, not in a release yet; issue #166 in
-  [4hum-ai/jawb](https://github.com/4hum-ai/jawb)): a tool with
-  `runner = "exec"`, a `[runtime]` section (`node = ">=22"`,
-  `entry = "dist/extension.mjs"`), a `dist/` bundle and an inert
-  `package.json`. The code runs on Node.js with the user's full access, so
-  jawb installs it only on an approval the operating system verifies.
-  [Code extensions](https://jawb.app/docs/extensions#code-extensions) on
-  jawb.app describes them. The Hub's checks refuse the `exec` runner until
-  they are extended to check code packages; this page will describe them
-  then.
-- **Hooks.** Code extensions reacting to what happens in jawb (activation
-  rules such as "on these URLs", and events), from ADR 0023 phase 3,
-  issue #198.
+- **Hooks.** Code extensions reacting to what happens in jawb, with
+  `[activation]` (which URLs and sessions) and `[[hooks]]` (which events),
+  from ADR 0023 phase 3, issue #198 in
+  [4hum-ai/jawb](https://github.com/4hum-ai/jawb). The Hub already checks
+  them, and `listings.json` will show them with every wildcard event
+  expanded, but it refuses them until a jawb release installs them.

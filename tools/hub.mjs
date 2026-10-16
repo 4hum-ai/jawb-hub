@@ -13,6 +13,10 @@
 //   - unpack it (one top-level directory, as npm's `package/`, is stripped)
 //     with the package rules;
 //   - check the manifest the way jawbd will;
+//   - for a code package (a runner = "exec" tool, ADR 0023 section 3): the
+//     bundle rules, so only dist/**/*.{mjs,js,json,wasm} beside the
+//     workflow files, no node_modules, addons, executables or symlinks, no
+//     lifecycle scripts, and [runtime] node >=22 with its entry in dist/;
 //   - look for hidden characters and never-list words;
 //   - check ownership of the id: with --author (the PR's author), a new
 //     listing needs proof for the id's domain, or `io.github.<author>.*`;
@@ -33,8 +37,36 @@ const fail = (m) => {
 };
 
 // ---- the rules jawbd applies (core crates/extensions; ADR 0017 R5, R8, R9)
-export const RUNNERS = { "scenario.validate": 18, "scenario.run": 18, "screens.capture": 19 };
+// The API level that added the `exec` runner and `[runtime]` (ADR 0023
+// section 3; 4hum-ai/jawb#166): the package's own Node bundle, run with the
+// user's full access.
+export const EXEC_LEVEL = 35;
+export const RUNNERS = { "scenario.validate": 18, "scenario.run": 18, "screens.capture": 19, exec: EXEC_LEVEL };
 export const SHAPES = ["workflow"]; // what jawbd installs today
+// `[runtime] node` must allow only Node 22 or later (Node 20 is end of life).
+export const MIN_NODE_MAJOR = 22;
+// The API level at which jawbd installs `[activation]` and `[[hooks]]` (ADR
+// 0023 phase 3, 4hum-ai/jawb#198). null while no jawbd does: jawbd refuses
+// an unknown section, so the Hub refuses it too, and a listing never names
+// something jawb cannot install. Set it when #198 ships.
+export const HOOKS_LEVEL = null;
+// Top-level sections jawbd parses (manifest.rs SECTIONS), the ones it
+// reserves (RESERVED_SECTIONS), and the two phase 3 adds.
+const SECTIONS = ["extension", "matches", "capabilities", "limits", "tools", "connector", "effects", "runtime"];
+const RESERVED_SECTIONS = ["triggers", "storage", "artifacts", "prompts", "test", "rules", "reader", "plugin"];
+const HOOK_SECTIONS = ["activation", "hooks"];
+// npm lifecycle scripts an inert package.json may not declare (lib.rs
+// LIFECYCLE_SCRIPTS): jawb never runs them.
+export const LIFECYCLE_SCRIPTS = ["preinstall", "install", "postinstall", "prepare", "prepublish", "preprepare", "postprepare"];
+// Hook events a wildcard verb expands to (the #161 catalogue; ADR 0023
+// section 6: wildcards in the verb position only, shown expanded).
+export const HOOK_VERBS = {
+  act: ["click", "fill", "type", "select", "check", "press", "hover", "scroll", "submit", "media", "dialog-accept"],
+  nav: ["open", "navigate", "history", "reload"],
+  see: ["screenshot", "viewport", "emulation"],
+};
+// Areas no hook may name (ADR 0023 section 6).
+const HOOK_DENIED_AREAS = ["daemon", "config", "subscriber", "desktop", "profile", "secret", "storage", "bridge", "extension", "index"];
 const EFFECTS = ["none", "act", "submit", "download", "upload", "credential"];
 const CAPABILITIES = ["network_domains", "secrets", "browser_sessions", "filesystem", "user_identity"];
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -136,7 +168,7 @@ export async function fetchSource(source, env = process.env) {
   const registry = (env.HUB_NPM_REGISTRY || "https://registry.npmjs.org").replace(/\/$/, "");
   const meta = JSON.parse((await fetchBytes(`${registry}/${source.package.replace("/", "%2f")}`, 32 * 1024 * 1024)).toString());
   const v = meta.versions?.[source.version] ?? fail(`npm ${source.package}@${source.version}: no such version`);
-  const scripts = Object.keys(v.scripts ?? {}).filter((k) => /^(pre|post)?install$|^prepare$/.test(k));
+  const scripts = Object.keys(v.scripts ?? {}).filter((k) => LIFECYCLE_SCRIPTS.includes(k));
   if (scripts.length) fail(`npm ${source.package}@${source.version}: has ${scripts.join(", ")} scripts; jawb never runs them, so a package must not need them`);
   const tar = await fetchBytes(v.dist.tarball);
   if (v.dist.integrity) {
@@ -160,6 +192,7 @@ export function untar(tgz) {
   let longName = null;
   let paxPath = null;
   let entries = 0;
+  const dirs = [];
   const str = (b) => b.toString("utf8").replace(/\0.*$/s, "");
   while (off + 512 <= tar.length) {
     const h = tar.subarray(off, off + 512);
@@ -185,26 +218,119 @@ export function untar(tgz) {
     let name = paxPath ?? longName ?? (prefix ? `${prefix}/${str(h.subarray(0, 100))}` : str(h.subarray(0, 100)));
     paxPath = null;
     longName = null;
-    if (type === "5") continue;
-    if (type !== "0") fail(`\`${name}\` is not a regular file (type ${type}); a package holds regular files only`);
+    if (type === "5") {
+      dirs.push(name);
+      continue;
+    }
+    if (type !== "0") fail(`\`${name}\` is not a regular file (type ${type}); a package holds regular files only (no symlinks, links or devices)`);
     name = name.replace(/^\.\//, "");
     if (name.startsWith("/") || name.split("/").includes("..")) fail(`\`${name}\`: absolute paths and .. are refused`);
     if (files.has(name)) fail(`\`${name}\` appears twice`);
     files.set(name, Buffer.from(data));
   }
+  let out = files;
+  let top = "";
   if (!files.has("extension.toml")) {
     const tops = new Set([...files.keys()].map((p) => p.split("/")[0]));
     if (tops.size !== 1) fail("no extension.toml at the root, and not exactly one top-level directory");
-    const top = [...tops][0] + "/";
-    const stripped = new Map();
-    for (const [p, b] of files) stripped.set(p.slice(top.length), b);
-    return stripped;
+    top = [...tops][0] + "/";
+    out = new Map();
+    for (const [p, b] of files) out.set(p.slice(top.length), b);
   }
-  return files;
+  // jawbd's normalise(): a plain relative path, nothing else.
+  for (const p of out.keys()) normalisePath(p);
+  // A directory a package may hold: schemas, and dist with its
+  // subdirectories (package.rs allowed_dir).
+  for (const d of dirs) {
+    const raw = d.replace(/^\.\//, "").replace(/\/$/, "");
+    if (top && raw === top.slice(0, -1)) continue;
+    const inner = top && raw.startsWith(top) ? raw.slice(top.length) : raw;
+    if (!allowedDir(normalisePath(inner))) fail(`unexpected directory \`${d}\` in the package (only schemas/ and dist/)`);
+  }
+  return out;
 }
 
-const allowedPath = (p) =>
-  ["extension.toml", "README.md", "LICENSE", "package.json"].includes(p) || /^schemas\/[A-Za-z0-9._-]+\.json$/.test(p);
+/** jawbd's path rule: no absolute path, `..`, `.`, empty segment, backslash, colon or NUL. */
+function normalisePath(p) {
+  const q = p.replace(/^\.\//, "").replace(/\/$/, "");
+  if (!q || q.startsWith("/") || /[\\:\0]/.test(q) || q.split("/").some((c) => !c || c === "." || c === "..")) {
+    fail(`the package path \`${p}\` is not a plain relative path`);
+  }
+  return q;
+}
+
+/** A package path under `schemas/`: one level, `.json` (manifest.rs valid_schema_path). */
+export const validSchemaPath = (p) => {
+  const n = p.startsWith("schemas/") ? p.slice(8) : null;
+  return n !== null && n.length > 5 && n.endsWith(".json") && !n.startsWith(".") && /^[A-Za-z0-9._-]+$/.test(n);
+};
+
+/**
+ * A bundle path an exec package may hold (manifest.rs valid_dist_path):
+ * `dist/` then at most 8 `[A-Za-z0-9._-]` segments, none hidden, none
+ * `node_modules`, ending in .mjs, .js, .json or .wasm.
+ */
+export function validDistPath(p) {
+  if (!p.startsWith("dist/")) return false;
+  const rest = p.slice(5);
+  const segs = rest.split("/");
+  return (
+    rest.length > 0 &&
+    segs.length <= 8 &&
+    segs.every((s) => s && !s.startsWith(".") && s !== "node_modules" && /^[A-Za-z0-9._-]+$/.test(s)) &&
+    [".mjs", ".js", ".json", ".wasm"].some((x) => p.endsWith(x))
+  );
+}
+
+const allowedDir = (p) => p === "schemas" || p === "dist" || (p.startsWith("dist/") && validDistPath(`${p}/x.js`));
+
+export const allowedPath = (p) =>
+  ["extension.toml", "README.md", "LICENSE", "package.json"].includes(p) || validSchemaPath(p) || validDistPath(p);
+
+/** Why a path is refused, in the words an author needs. */
+function refusedPath(f) {
+  const segs = f.split("/");
+  if (segs.includes("node_modules")) return `\`${f}\`: node_modules is refused; bundle what the code needs into dist/ (jawb never runs npm install)`;
+  if (f.endsWith(".node")) return `\`${f}\`: native addons (.node) are refused; exec code is JavaScript or Wasm`;
+  if (f.startsWith("dist/")) return `\`${f}\` may not be in dist/ (dist/**/*.{mjs,js,json,wasm}, at most 8 levels, no hidden names)`;
+  return `\`${f}\` may not be in a package (extension.toml, schemas/*.json, README.md, LICENSE, package.json, and for exec tools dist/**/*.{mjs,js,json,wasm})`;
+}
+
+// Executable formats a file may not be, whatever its name: PE, ELF,
+// Mach-O (both byte orders, 32 and 64 bit, and fat).
+const EXE_MAGIC = [
+  [0x4d, 0x5a],
+  [0x7f, 0x45, 0x4c, 0x46],
+  [0xfe, 0xed, 0xfa, 0xce],
+  [0xfe, 0xed, 0xfa, 0xcf],
+  [0xce, 0xfa, 0xed, 0xfe],
+  [0xcf, 0xfa, 0xed, 0xfe],
+  [0xca, 0xfe, 0xba, 0xbe],
+];
+export const isNativeExecutable = (b) => EXE_MAGIC.some((m) => b.length >= m.length && m.every((x, i) => b[i] === x));
+
+/** The lowest Node major a `[runtime] node` range allows: only `>=MAJOR[.MINOR[.PATCH]]` (manifest.rs node_min_major). */
+export function nodeMinMajor(range) {
+  if (typeof range !== "string") return null;
+  const t = range.trim();
+  if (!t.startsWith(">=")) return null;
+  const parts = t.slice(2).trim().split(".");
+  if (parts.length > 3 || !parts.every((x) => /^\d+$/.test(x))) return null;
+  return Number(parts[0]);
+}
+
+/**
+ * A hook's `on`, expanded: `act.*.after` becomes one event per verb. null
+ * when the wildcard is anywhere but the verb position, or its area has no
+ * verbs.
+ */
+export function expandHookEvent(on) {
+  if (typeof on !== "string") return null;
+  if (!on.includes("*")) return [on];
+  const m = on.match(/^([a-z]+)\.\*\.(after)$/);
+  if (!m || !HOOK_VERBS[m[1]]) return null;
+  return HOOK_VERBS[m[1]].map((v) => `${m[1]}.${v}.${m[2]}`);
+}
 
 // ---- the package checks ---------------------------------------------------------
 export function checkPackage(files, listing, version) {
@@ -214,7 +340,8 @@ export function checkPackage(files, listing, version) {
   let total = 0;
   for (const [f, b] of files) {
     total += b.length;
-    if (!allowedPath(f)) p(`\`${f}\` may not be in a workflow package (extension.toml, schemas/*.json, README.md, LICENSE, package.json)`);
+    if (!allowedPath(f)) p(refusedPath(f));
+    else if (isNativeExecutable(b)) p(`\`${f}\` is a native executable; a package holds no executables (exec code is a JavaScript or Wasm bundle)`);
   }
   if (total > MAX_BYTES) p("the package is over 5 MB unpacked");
   const raw = files.get("extension.toml");
@@ -225,6 +352,10 @@ export function checkPackage(files, listing, version) {
     m = parseToml(raw.toString("utf8"));
   } catch (e) {
     return { problems: [...problems, `extension.toml is not valid TOML: ${e.message}`], manifest: null };
+  }
+  for (const k of Object.keys(m)) {
+    if (RESERVED_SECTIONS.includes(k)) p(`[${k}] is reserved; jawb refuses it`);
+    else if (!SECTIONS.includes(k) && !HOOK_SECTIONS.includes(k)) p(`unknown section [${k}]; jawb refuses a manifest with one`);
   }
   const e = m.extension ?? {};
   if (e.id !== listing.id) p(`extension.toml id \`${e.id}\` is not the listing's \`${listing.id}\``);
@@ -270,10 +401,138 @@ export function checkPackage(files, listing, version) {
       }
     }
   }
+  problems.push(...checkCode(files, m, tools));
+  problems.push(...checkHooks(m, tools));
   if (HIDDEN.test(texts[1])) p("README.md holds invisible or bidi characters");
   const never = texts.find((t) => NEVER.test(t));
   if (never) p(`mentions something on jawb's never-list (\`${never.match(NEVER)[0]}\`): a maintainer has to look at it`);
   return { problems, manifest: m };
+}
+
+// ---- code packages (ADR 0023 section 3; jawbd's check_package, #166) ---------------
+/** Whether the package runs its own code: a tool with runner = "exec". */
+export const isCode = (m) => (Array.isArray(m?.tools) ? m.tools : []).some((t) => t?.runner === "exec");
+
+function checkCode(files, m, tools) {
+  const problems = [];
+  const p = (s) => problems.push(s);
+  const code = tools.some((t) => t?.runner === "exec");
+  const r = m.runtime;
+  if (!code) {
+    const d = [...files.keys()].find((f) => f.startsWith("dist/"));
+    if (d) p(`\`${d}\`: dist/ holds an exec tool's code, and this extension has no exec tool`);
+    if (r !== undefined) p("[runtime] is only for extensions with an exec tool");
+  } else if (r === undefined || typeof r !== "object" || Array.isArray(r)) {
+    p('a tool with runner = "exec" needs [runtime] node = ">=22" and entry = "dist/<file>.mjs"');
+  } else {
+    const extra = Object.keys(r).filter((k) => !["node", "entry"].includes(k));
+    if (extra.length) p(`unknown key(s) in [runtime]: ${extra.join(", ")} (node, entry)`);
+    const major = nodeMinMajor(r.node);
+    if (major === null) p(`[runtime] node \`${r.node}\` is not a Node range jawb understands; use ">=${MIN_NODE_MAJOR}"`);
+    else if (major < MIN_NODE_MAJOR) p(`[runtime] node allows Node ${major}; it must be >=${MIN_NODE_MAJOR} or higher (Node 20 is end of life)`);
+    const entry = r.entry;
+    if (typeof entry !== "string" || !validDistPath(entry) || !(entry.endsWith(".mjs") || entry.endsWith(".js"))) {
+      p(`[runtime] entry \`${entry}\` is not a bundle under dist/ (dist/<file>.mjs)`);
+    } else if (!files.has(entry)) {
+      p(`[runtime] entry \`${entry}\` is not in the package`);
+    }
+  }
+  const pj = files.get("package.json");
+  if (pj) {
+    let v;
+    try {
+      v = JSON.parse(pj.toString("utf8"));
+    } catch (e) {
+      p(`package.json is not JSON: ${e.message}`);
+    }
+    const s = v && typeof v.scripts === "object" && v.scripts ? v.scripts : {};
+    const k = LIFECYCLE_SCRIPTS.find((x) => Object.hasOwn(s, x));
+    if (k) p(`package.json declares a \`${k}\` script; jawb never runs install scripts, so bundle what the extension needs`);
+  }
+  return problems;
+}
+
+// ---- activation and hooks (ADR 0023 sections 5 and 6, phase 3) ----------------------
+const ACTIVATION_URL = /^(https?):\/\/((?:\*\.)?[a-z0-9.-]+|\[[0-9a-f:]+\])(?::(\d{1,5}|\*))?(\/[^\s?#]*)?$/;
+
+/** Is the origin of an `[activation] urls` entry inside one of `[matches] origins`? */
+function originCovered(url, origins) {
+  const a = url.match(ACTIVATION_URL);
+  if (!a) return false;
+  const [, scheme, host, port = ""] = a;
+  return origins.some((o) => {
+    const b = typeof o === "string" ? o.match(/^(https?):\/\/((?:\*\.)?[a-z0-9.-]+|\[[0-9a-f:]+\])(?::(\d{1,5}|\*))?$/) : null;
+    if (!b || b[1] !== scheme) return false;
+    const [, , oh, op = ""] = b;
+    const hostOk = oh === host || (oh.startsWith("*.") && !host.startsWith("*.") && host.endsWith(oh.slice(1)) && !host.slice(0, -oh.length + 1).includes("."));
+    const portOk = op === port || op === "*";
+    return hostOk && portOk;
+  });
+}
+
+function checkHooks(m, tools) {
+  const problems = [];
+  const p = (s) => problems.push(s);
+  const act = m.activation;
+  const hooks = m.hooks;
+  if (act === undefined && hooks === undefined) return problems;
+  if (HOOKS_LEVEL === null) {
+    p("[activation] and [[hooks]] are ADR 0023 phase 3 (4hum-ai/jawb#198): no released jawbd installs them yet, so the Hub cannot list them");
+  } else if (!(m.extension?.min_api_level >= HOOKS_LEVEL)) {
+    p(`[activation] and [[hooks]] need min_api_level ${HOOKS_LEVEL} or higher`);
+  }
+  if (!tools.some((t) => t?.runner === "exec")) p("[activation] and [[hooks]] are for extensions with an exec tool");
+  if (act !== undefined) {
+    if (typeof act !== "object" || Array.isArray(act)) p("[activation] is a table");
+    else {
+      const extra = Object.keys(act).filter((k) => !["urls", "sessions"].includes(k));
+      if (extra.length) p(`unknown key(s) in [activation]: ${extra.join(", ")} (urls, sessions)`);
+      const origins = Array.isArray(m.matches?.origins) ? m.matches.origins : [];
+      if (!Array.isArray(act.urls) || !act.urls.length) p("[activation] urls is a non-empty list");
+      else {
+        for (const u of act.urls) {
+          if (typeof u !== "string" || !ACTIVATION_URL.test(u)) p(`[activation] url \`${u}\` is not an origin pattern with an optional /path glob`);
+          else if (!originCovered(u, origins)) p(`[activation] url \`${u}\` is outside [matches] origins`);
+        }
+      }
+      if (act.sessions !== undefined) {
+        const granted = Array.isArray(m.capabilities?.browser_sessions) ? m.capabilities.browser_sessions : [];
+        if (!Array.isArray(act.sessions)) p("[activation] sessions is a list");
+        else for (const s of act.sessions) if (!granted.includes(s)) p(`[activation] session \`${s}\` is not granted in [capabilities] browser_sessions`);
+      }
+    }
+  }
+  if (hooks !== undefined) {
+    if (!Array.isArray(hooks)) return [...problems, "[[hooks]] is an array of tables"];
+    if (act === undefined) p("[[hooks]] needs [activation]: a hook fires only on pages inside it");
+    const seen = new Set();
+    for (const h of hooks) {
+      const extra = Object.keys(h ?? {}).filter((k) => !["on", "where", "input"].includes(k));
+      if (extra.length) p(`hook \`${h?.on}\`: unknown key(s) ${extra.join(", ")} (on, where, input)`);
+      const on = h?.on;
+      const area = typeof on === "string" ? on.split(".")[0] : "";
+      const events = expandHookEvent(on);
+      if (typeof on !== "string" || !/^[a-z][a-z_-]*(\.[a-z*][a-z_*-]*)+$/.test(on)) p(`hook \`${on}\`: on names a catalogue event`);
+      else if (on.endsWith(".before")) p(`hook \`${on}\`: a .before gate point is for [[rules]] only, never a hook`);
+      else if (HOOK_DENIED_AREAS.includes(area)) p(`hook \`${on}\`: ${area}.* events are never given to extensions`);
+      else if (!events) p(`hook \`${on}\`: a wildcard may stand only for the verb (${Object.keys(HOOK_VERBS).map((a) => `${a}.*.after`).join(", ")})`);
+      else {
+        for (const ev of events) {
+          if (seen.has(ev)) p(`hook \`${on}\`: ${ev} has another hook; one hook per event`);
+          seen.add(ev);
+        }
+      }
+      const w = h?.where;
+      const scalar = (x) => ["string", "number", "boolean"].includes(typeof x);
+      if (w !== undefined && (typeof w !== "object" || Array.isArray(w) || !Object.values(w).every((x) => scalar(x) || (Array.isArray(x) && x.every(scalar))))) {
+        p(`hook \`${on}\`: where holds equality or membership tests only`);
+      }
+      if (h?.input !== undefined && (!Array.isArray(h.input) || !h.input.every((x) => typeof x === "string" && /^[a-z][a-z0-9_.]*$/.test(x)))) {
+        p(`hook \`${on}\`: input is a list of payload field names`);
+      }
+    }
+  }
+  return problems;
 }
 
 // ---- ownership --------------------------------------------------------------------
@@ -402,7 +661,14 @@ export function listingsJson(results, now = new Date()) {
         owners: r.listing.owners,
         latest: latest.version,
         min_api_level: m.extension.min_api_level,
-        tools: m.tools.map((t) => ({ name: `${r.listing.id}.${t.name}`, description: t.description, max_effect: t.max_effect })),
+        // Code runs with the user's full access: jawb.app labels it so.
+        code: isCode(m),
+        runtime: isCode(m) ? { node: m.runtime.node, entry: m.runtime.entry } : null,
+        // For jawb.app's Hooks block: what activates the code, every
+        // wildcard expanded to the events it covers (ADR 0023 section 6).
+        activation: m.activation ? { urls: m.activation.urls, sessions: m.activation.sessions ?? [] } : null,
+        hooks: (m.hooks ?? []).map((h) => ({ on: h.on, events: expandHookEvent(h.on), where: { ...(h.where ?? {}) }, input: [...(h.input ?? [])] })),
+        tools: m.tools.map((t) => ({ name: `${r.listing.id}.${t.name}`, description: t.description, max_effect: t.max_effect, runner: t.runner })),
         versions: vs.map((v) => ({ version: v.version, source: v.source, artifact_sha256: v.artifact_sha256 })),
       };
     })

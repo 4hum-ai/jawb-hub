@@ -88,14 +88,15 @@ source = { kind = "npm", package = "@example/jawb-hello", version = "1.1.0" }
 
 ## The package
 
-A workflow extension, as jawb installs today, is:
+A package is:
 
 ```
 extension.toml        the manifest (https://jawb.app/docs/extensions)
 schemas/*.json        tool input and output schemas
 README.md
 LICENSE               optional
-package.json          npm packages only; ignored by jawb
+package.json          optional; inert data, jawb never runs its scripts
+dist/**               code extensions only: *.mjs, *.js, *.json, *.wasm
 ```
 
 You can put these files in one top-level directory, as npm's `package/`
@@ -105,7 +106,11 @@ The checks that apply:
 - **id:** reverse-DNS (`com.example.hello`). `app.jawb.*` is jawb's own.
 - **Tool names:** local (`run`); the full name is `<id>.run`.
 - **Runners:** one jawb ships (`scenario.validate`, `scenario.run`,
-  `screens.capture`), with `min_api_level` high enough for it.
+  `screens.capture`, `exec`), with `min_api_level` high enough for it.
+- **Code (`exec`):** one self-contained bundle in `dist/`, with
+  `[runtime] node = ">=22"` and its `entry` there; no `node_modules`,
+  `.node` addons, executables, symlinks or npm lifecycle scripts
+  ([docs/manifest.md](docs/manifest.md#code-extensions)).
 - **Grants:** every grant has a reason in `[capabilities.why]`.
 - **Text:** no hidden or bidi characters in anything a model reads.
 - **Never-list:** nothing on it (TERMS.md).

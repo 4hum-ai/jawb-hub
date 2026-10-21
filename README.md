@@ -141,3 +141,10 @@ node --test tools/*.test.mjs
 
 Use the "Report an extension" issue form. For anything sensitive, use a
 private vulnerability report (Security tab). See [SECURITY.md](SECURITY.md).
+
+## Licence
+
+This repository (the checker, the workflows, the listing files and the docs)
+is licensed under the [Apache License 2.0](LICENSE). An extension package is
+hosted by its publisher under the licence its publisher chooses
+([TERMS.md](TERMS.md), section 2).

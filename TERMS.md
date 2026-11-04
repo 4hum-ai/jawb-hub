@@ -1,6 +1,7 @@
 # jawb Hub listing terms
 
-Version 1.0, effective 2026-10-07. These terms apply between 4hum, which
+Version 1.1, effective 2026-10-21 (1.0: 2026-10-07; 1.1 adds the takedown
+target for reports that are not security reports). These terms apply between 4hum, which
 operates jawb and jawb Hub ("we"), and anyone who submits or maintains a
 listing ("you", the publisher). They also tell people who install a listed
 extension what a listing means. Opening a listing pull request means you
@@ -51,10 +52,11 @@ You confirm that:
   time and without prior notice, when we believe it breaks these terms,
   puts people at risk, or exposes us to legal risk. When we can, we tell
   you why.
-- **Security takedowns.** Our target is to remove a listing within 24 hours
-  of confirming a security report. Once jawb's signed index carries
-  third-party listings, we also revoke the version, so installed copies
-  switch off.
+- **Takedowns.** Our target is to remove a listing within **24 hours** of
+  confirming a report of malware or credential theft, and within **7 days**
+  of confirming any other report that breaks these terms. Once jawb's
+  signed index carries third-party listings, we also revoke the version
+  after a security takedown, so installed copies switch off.
 - **Name and namespace disputes.** Proof of the domain decides. A trademark
   complaint may suspend a listing while it is resolved.
 - **Show listing data** (id, purpose, publisher, owners, homepage, versions,
